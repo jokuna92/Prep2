@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="cs"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#c9a995">
+<title>Vizuální styl Mobil</title>
+<style>
+/* Layout: návrh otočený o 90 stupňů po směru hodin (na výšku), oranžové kruhy nahoře, fialová a zelená dole.
+   Plátno se vejde celé do displeje, zbytek vyplňuje béžová barva pozadí. */
+:root{--bg:#c9a995;--hint-bg:#f4e6dc;--hint-fg:#4a3326}
+html{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--bg);overflow:hidden}
+body{background:var(--bg);-webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none}
+#stage{position:relative;width:100%;height:100%;touch-action:none}
+canvas{position:absolute;display:block;touch-action:none}
+/* Nápověda se zobrazí jen na iPhonu, kde je pro snímání náklonu potřeba klepnutí a povolení */
+#hint{position:fixed;z-index:10;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom,0px) + 16px);max-width:calc(100% - 32px);padding:10px 16px;border:0;border-radius:18px;background:var(--hint-bg);color:var(--hint-fg);font:500 14px/1.3 system-ui,-apple-system,"Segoe UI",sans-serif;text-align:center;touch-action:manipulation;cursor:pointer}
+</style>
+</head><body>
+
+
+<div id="stage"><canvas id="c"></canvas></div>
+<button id="hint" type="button" hidden>Klepnutím zapnete pohyb telefonu</button>
+
+<script>
+(function () {
+  // Návrhový prostor zůstává na šířku (2560 x 1440), na displej se kreslí otočený o 90 stupňů.
+  var W = 2560, H = 1440;
+  var PW = H, PH = W; // rozměry plátna na výšku
+  var BG = '#c9a995';
+  var BEIGE = [201, 169, 149];
+  var ORANGE = [255, 88, 46], PURPLE = [97, 19, 186], GREEN = [2, 64, 17];
+
+  // Nastavení chování (lze ladit)
+  // Pohyb má měkký rozjezd i dojezd (kriticky tlumená pružina bez překmitu). Menší číslo = delší najíždění.
+  var DELAY_MAX = 0.6;   // sekundy zpoždění u nejvzdálenějších dlaždic
+  var RATE_NEAR = 3.2;   // tuhost u dlaždic blízko doteku (1/s)
+  var RATE_FAR = 1.3;    // tuhost u nejvzdálenějších dlaždic (1/s)
+  var RATE_REST = 1.8;   // tuhost při návratu do výchozí polohy
+  var TILT_SPAN = 0.20;     // změna polohy telefonu, při které výchylka dosáhne zhruba tří čtvrtin maxima (větší číslo = méně citlivé a delší škála)
+  var TILT_SMOOTH = 0.10;  // sekundy, vyhlazení signálu ze senzoru, aby pohyb neškubal (větší číslo = klidnější)
+  var TILT_DEAD = 0.02;   // drobné chvění ruky pod touto hodnotou se ignoruje
+  var RATE_TILT_NEAR = 5.0; // tuhost pohybu při náklonu, blízké dlaždice (menší číslo = pomalejší)
+  var RATE_TILT_FAR = 2.2;  // tuhost pohybu při náklonu, vzdálené dlaždice
+  var TILT_ADAPT = 90;   // sekundy, za které se výchozí poloha telefonu přizpůsobí tomu, jak ho držíte
+  var TILT_DIR = 1;      // 1 = jádro se kutálí ve směru, kam telefon klopíte, -1 = opačně
+  var MAX_CIRCLES = 100; // nejvyšší počet kusů v jedné ploše (každé dělení přidá 3, takže 1 + 3 x 33 = 100)
+  var MAX_DEPTH = 5;     // pojistka proti příliš malým kruhům
+  var FADE = 0.45;       // sekundy prolnutí při dělení a slučování
+  var SATURATE = 0.5;    // vzdálenost doteku (v rozměrech dlaždice), od které je výchylka plná
+  // Maximální výchylka barevného jádra od středu dlaždice (v rozměrech dlaždice). Větší hodnota, výraznější natáčení.
+  var REACH = { circle: 0.40, purple: 0.34, green: 0.38, glow: 0.30 };
+
+  var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (reduceMotion) { DELAY_MAX = 0; RATE_NEAR = 14; RATE_FAR = 14; RATE_REST = 14; }
+
+  // Profily gradientu: [vzdálenost od středu v px návrhového prostoru, t], t 0 = barevné jádro, 1 = béžová
+  var P_CIRCLE = [[0,0],[75,0],[90,.026],[110,.103],[130,.205],[150,.326],[170,.463],[190,.613],[210,.777],[230,.946],[245,1]];
+  var P_GREEN  = [[0,0],[55,0],[70,.045],[90,.117],[110,.215],[130,.331],[150,.456],[170,.589],[190,.715],[210,.866],[230,.984],[234,1]];
+  var P_PURPLE = [[0,0],[30,0],[54,.007],[78,.022],[102,.051],[126,.093],[150,.152],[174,.229],[198,.327],[222,.446],[246,.584],[270,.748],[294,.939],[306,1]];
+  var P_GLOW   = [[0,0],[195,0],[220,.017],[260,.053],[300,.111],[340,.184],[380,.263],[420,.357],[460,.457],[500,.569],[540,.69],[580,.806],[620,.942],[640,1]];
+
+  function mix(a, b, t) {
+    return 'rgb(' + Math.round(a[0] + (b[0] - a[0]) * t) + ',' +
+                    Math.round(a[1] + (b[1] - a[1]) * t) + ',' +
+                    Math.round(a[2] + (b[2] - a[2]) * t) + ')';
+  }
+  function buildStops(prof, dark) {
+    var R = prof[prof.length - 1][0];
+    return { R: R, gr: null, stops: prof.map(function (p) { return [p[0] / R, mix(dark, BEIGE, p[1])]; }) };
+  }
+  function makeGradient(ctx, g) {
+    var gr = ctx.createRadialGradient(0, 0, 0, 0, 0, g.R);
+    for (var i = 0; i < g.stops.length; i++) gr.addColorStop(g.stops[i][0], g.stops[i][1]);
+    return gr;
+  }
+
+  var canvas = document.getElementById('c');
+  var stage = document.getElementById('stage');
+  var ctx = canvas.getContext('2d');
+
+  var gCircle = buildStops(P_CIRCLE, ORANGE);
+  var gGreen  = buildStops(P_GREEN, GREEN);
+  var gPurple = buildStops(P_PURPLE, PURPLE);
+  var gGlow   = buildStops(P_GLOW, ORANGE);
+  [gCircle, gGreen, gPurple, gGlow].forEach(function (g) { g.gr = makeGradient(ctx, g); });
+
+  // Dlaždice. rx, ry = výchozí posun barevného jádra od středu dlaždice (v rozměrech dlaždice),
+  // ox, oy = aktuální posun.
+  var tiles = [];
+  function addTile(type, x, y, w, h, k, g, rest, reach) {
+    var t = makeTile(type, x, y, w, h, k, g, rest, reach);
+    tiles.push(t);
+    return t;
+  }
+  function makeTile(type, x, y, w, h, k, g, rest, reach) {
+    return {
+      type: type, x: x, y: y, w: w, h: h, k: k, g: g, reach: reach,
+      cx: x + w / 2, cy: y + h / 2, w0: w, h0: h, mode: 'quad', group: (g === gCircle ? 'circle' : g === gPurple ? 'purple' : g === gGreen ? 'green' : 'glow'), depth: 0, parent: null, kids: null, a: 1, fade: 1, glow: false,
+      rx: rest[0], ry: rest[1], ox: rest[0], oy: rest[1], vx: 0, vy: 0
+    };
+  }
+  var r, c;
+  // Radiální záře za kruhy (kreslí se první, aby ležela pod nimi), pohybuje se stejně jako ostatní gradienty
+  addTile('rect', 0, 0, 1463, 1440, 1, gGlow, [0, 0], REACH.glow).glow = true;
+  var cw = 1463 / 4, ch = 360;
+  // Celá plocha kruhů začíná jako jediný velký kruh. Dvojím rozdělením vznikne původní mřížka 4 x 4.
+  addTile('ellipse', 0, 0, 1463, 1440, 1, gCircle, [0.217, -0.111], REACH.circle).w0 = cw;
+  tiles[tiles.length - 1].h0 = ch;
+  // Fialová a zelená plocha začínají také jako jediný velký útvar (původní dlaždice 3 a 8 jsou jejich základní velikost)
+  var pw = (2560 - 1463) / 3;
+  // Fialové jsou pruhy: dělí se jen svisle, vedle sebe
+  var pt = addTile('rect', 1463, 0, 2560 - 1463, 872, 2.4, gPurple, [0.162, -0.163], REACH.purple);
+  pt.w0 = pw; pt.mode = 'vert';
+  var gw = (2560 - 1463) / 4, gh = (1440 - 872) / 2;
+  // Zelené jsou čtverce: začínají jako dva velké (každý se dělí na 4 čtverce), dohromady dávají původních 8 po jednom rozdělení
+  for (c = 0; c < 2; c++) {
+    var gt = addTile('rect', 1463 + c * 2 * gw, 872, 2 * gw, 2 * gh, 1, gGreen, [0.157, -0.155], REACH.green);
+    gt.w0 = gw; gt.h0 = gh;
+  }
+
+  var sx = 1, dirty = true;
+
+  // Diagnostika: po otevření stránky s příponou ?debug v adrese se vlevo nahoře ukáže stav vykreslování a senzoru
+  var DEBUG = typeof location !== 'undefined' && /[?&]debug/.test(location.search);
+  var st = { frames: 0, ev: 0, drawSum: 0, drawN: 0, drawMax: 0, gapMax: 0, gapWorst: 0, stepMax: 0, stepWorst: 0, prev: null, t0: 0 };
+  var dbg = null;
+  function scrAngle() {
+    var o = window.screen && window.screen.orientation;
+    if (o && typeof o.angle === 'number') return o.angle;
+    return typeof window.orientation === 'number' ? window.orientation : 'n/a';
+  }
+  if (DEBUG) {
+    dbg = document.createElement('pre');
+    dbg.style.cssText = 'position:fixed;left:8px;top:calc(env(safe-area-inset-top,0px) + 8px);margin:0;padding:6px 8px;border-radius:8px;background:rgba(0,0,0,.7);color:#fff;font:11px/1.35 ui-monospace,Menlo,monospace;z-index:20;pointer-events:none;white-space:pre';
+    document.body.appendChild(dbg);
+  }
+
+  function resize() {
+    var sw = stage.clientWidth, sh = stage.clientHeight;
+    var scale = Math.min(sw / PW, sh / PH);
+    var cssW = PW * scale, cssH = PH * scale;
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.style.width = cssW + 'px';
+    canvas.style.height = cssH + 'px';
+    canvas.style.left = ((sw - cssW) / 2) + 'px';
+    canvas.style.top = ((sh - cssH) / 2) + 'px';
+    canvas.width = Math.round(cssW * dpr);
+    canvas.height = Math.round(cssH * dpr);
+    sx = canvas.width / PW;
+    dirty = true;
+  }
+
+  var ghosts = []; // dlaždice, které se právě prolínají do ztracena (rozdělené nebo sloučené)
+
+  function draw() {
+    // Otočení o 90 stupňů po směru hodin: X = H - y, Y = x
+    ctx.setTransform(0, sx, -sx, 0, H * sx, 0);
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, W, H);
+
+    for (var gi = 0; gi < ghosts.length; gi++) drawTile(ghosts[gi], smooth(Math.max(0, ghosts[gi].fade)));
+    for (var i = 0; i < tiles.length; i++) drawTile(tiles[i], smooth(tiles[i].a));
+  }
+
+  function drawTile(t, alpha) {
+    if (alpha <= 0.002) return;
+    // Osvědčené kreslení: ořez na tvar dlaždice a gradient posunutý do aktuální polohy jádra
+    var scx = t.w / t.w0, scy = t.h / t.h0; // gradient se zvětšuje a zmenšuje spolu s dlaždicí
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.beginPath();
+    if (t.type === 'ellipse') ctx.ellipse(t.cx, t.cy, t.w / 2, t.h / 2, 0, 0, Math.PI * 2);
+    else ctx.rect(t.x, t.y, t.w, t.h);
+    ctx.clip();
+    ctx.translate(t.cx + t.ox * t.w, t.cy + t.oy * t.h);
+    ctx.scale(scx, scy * t.k);
+    ctx.fillStyle = t.g.gr;
+        ctx.fillRect(-3000 / scx, -3000 / (scy * t.k), 6000 / scx, 6000 / (scy * t.k));
+    ctx.restore();
+  }
+
+  // Historie pozic doteku nebo myši, aby každá dlaždice mohla reagovat se zpožděním
+  var hist = [{ t: 0, a: false, x: 0, y: 0 }];
+  var lastPos = { x: W / 2, y: H / 2 };
+
+  // Souřadnice plátna na výšku zpět do návrhového prostoru na šířku: x = Y, y = H - X
+  function toDesign(e) {
+    var rect = canvas.getBoundingClientRect();
+    var px = (e.clientX - rect.left) / rect.width * PW;
+    var py = (e.clientY - rect.top) / rect.height * PH;
+    return { x: py, y: H - px };
+  }
+  var touching = false; // dokud je prst na displeji, má dotek přednost před náklonem
+  var touchT = 0;
+  function pushPos(e) {
+    if (e.pointerType === 'touch' || e.pointerType === 'pen') touchT = performance.now();
+    if (e.type === 'pointerdown' && (e.pointerType === 'touch' || e.pointerType === 'pen')) touching = true;
+    var p = toDesign(e);
+    lastPos = p;
+    hist.push({ t: performance.now(), a: true, x: p.x, y: p.y });
+  }
+  function pushLeave() {
+    touching = false;
+    hist.push({ t: performance.now(), a: false, x: lastPos.x, y: lastPos.y });
+  }
+  function onUp(e) { if (e.pointerType === 'touch' || e.pointerType === 'pen') pushLeave(); }
+
+  // Dělení: klepnutí na kruh ho rozdělí na 4, po dosažení 100 kruhů se začne slučovat zpět až na jeden
+  function isUnder(x, p) { while (x) { if (x === p) return true; x = x.parent; } return false; }
+  function split(t) {
+    var i = tiles.indexOf(t), hw = t.w / 2, hh = t.h / 2, kids = [];
+    var cols = 2, rows = 2;
+    if (t.mode === 'vert') { cols = 4; rows = 1; hw = t.w / 4; hh = t.h; }
+    for (var rr = 0; rr < rows; rr++) for (var cc = 0; cc < cols; cc++) {
+      var kd = makeTile(t.type, t.x + cc * hw, t.y + rr * hh, hw, hh, t.k, t.g, [t.rx, t.ry], t.reach);
+      kd.mode = t.mode;
+      kd.w0 = t.w0; kd.h0 = t.h0; kd.depth = t.depth + 1; kd.parent = t; kd.a = 0;
+      kd.ox = t.ox; kd.oy = t.oy; kd.vx = t.vx; kd.vy = t.vy;
+      kids.push(kd);
+    }
+    t.kids = kids; t.fade = t.a;
+    ghosts.push(t);
+    tiles.splice.apply(tiles, [i, 1].concat(kids));
+  }
+  function merge(p, from) {
+    var idx = -1, keep = [];
+    for (var i = 0; i < tiles.length; i++) {
+      var x = tiles[i];
+      if (isUnder(x, p)) { if (idx < 0) idx = keep.length; x.fade = x.a; ghosts.push(x); } else keep.push(x);
+    }
+    tiles = keep;
+    p.kids = null; p.a = 0; p.ox = from.ox; p.oy = from.oy; p.vx = from.vx; p.vy = from.vy;
+    ghosts = ghosts.filter(function (g) { return g !== p; });
+    tiles.splice(idx < 0 ? tiles.length : idx, 0, p);
+  }
+  var phases = { circle: 'split', purple: 'split', green: 'split' }; // každá plocha má vlastní průběh
+  function inGroup(g) { return tiles.filter(function (x) { return x.group === g; }); }
+  function anyMergeable(g) { return inGroup(g).some(function (x) { return x.parent; }); }
+  function onTap(pt) {
+    var hit = null;
+    for (var i = 0; i < tiles.length; i++) {
+      var t = tiles[i];
+      if (t.glow || t.group === 'glow') continue;
+      if (pt.x >= t.x && pt.x < t.x + t.w && pt.y >= t.y && pt.y < t.y + t.h) { hit = t; break; }
+    }
+    if (!hit) return;
+    var g = hit.group;
+    if (phases[g] === 'split') {
+      if (hit.depth >= (hit.mode === 'vert' ? 4 : MAX_DEPTH) || inGroup(g).length + 3 > MAX_CIRCLES) return;
+      split(hit);
+      // Po dosažení nejvyššího počtu kusů se začne slučovat zpět
+      if (inGroup(g).length + 3 > MAX_CIRCLES) phases[g] = 'merge';
+    } else {
+      if (!hit.parent) return;
+      merge(hit.parent, hit);
+      if (!anyMergeable(g)) phases[g] = 'split';
+    }
+    dirty = true;
+  }
+  var down = null;
+  window.addEventListener('pointerdown', function (e) { down = { x: e.clientX, y: e.clientY, t: performance.now() }; });
+  window.addEventListener('pointerup', function (e) {
+    if (!down) return;
+    var moved = Math.hypot(e.clientX - down.x, e.clientY - down.y), dur = performance.now() - down.t;
+    down = null;
+    if (moved < 14 && dur < 600) onTap(toDesign(e));
+  });
+
+  window.addEventListener('pointermove', pushPos);
+  window.addEventListener('pointerdown', pushPos);
+  window.addEventListener('pointerup', onUp);
+  window.addEventListener('pointercancel', pushLeave);
+  document.documentElement.addEventListener('mouseleave', pushLeave);
+  window.addEventListener('blur', pushLeave);
+  window.addEventListener('resize', resize);
+
+  // Náklon telefonu (deviceorientation). Funguje na zabezpečené adrese (HTTPS) a při držení telefonu na výšku.
+  var CENTER = { x: W / 2, y: H / 2 };
+  var tilt = { on: false, gx0: null, a0: 0, sx: 0, sy: 0, sz: 0, t: 0 };
+  var gotEvent = false;  // přišla alespoň jedna skutečná hodnota náklonu
+  var hintTimer = null;
+  function onOrient(e) {
+    if (e.beta == null || e.gamma == null) return;
+    st.ev++; st.beta = e.beta; st.gamma = e.gamma;
+    if (!gotEvent) { gotEvent = true; say('Pohyb telefonu je zapnutý', false); }
+    var now = performance.now();
+    if (touching && now - touchT < 3000) return;
+    // Směr zemské přitažlivosti v rovině displeje (X doprava, Y dolů). Je spojitý při jakémkoli natočení
+    // telefonu, takže funguje i při otáčení dokola o 360 stupňů, kde úhly beta a gamma samy skáčou.
+    var br = e.beta * Math.PI / 180, gr = e.gamma * Math.PI / 180;
+    var gX = Math.cos(br) * Math.sin(gr), gY = Math.sin(br), gZ = Math.cos(br) * Math.cos(gr);
+    if (tilt.gx0 === null) { tilt.gx0 = gX; tilt.a0 = Math.atan2(gZ, gY); tilt.sx = gX; tilt.sy = gY; tilt.sz = gZ; tilt.t = now; }
+    var dt = Math.min((now - tilt.t) / 1000, 0.2);
+    tilt.t = now;
+    // Vyhlazení signálu ze senzoru: drobné nepřesnosti a chvění ruky se tak nepřenesou do pohybu
+    var ks = 1 - Math.exp(-dt / TILT_SMOOTH);
+    tilt.sx += (gX - tilt.sx) * ks;
+    tilt.sy += (gY - tilt.sy) * ks;
+    tilt.sz += (gZ - tilt.sz) * ks;
+    // Náklon doleva a doprava: složka tíhy v rovině displeje. Náklon dopředu a dozadu: úhel mezi složkami Y a Z,
+    // protože u telefonu drženého na výšku se složka Y při předklonu téměř nemění (sinus u 90 stupňů je plochý).
+    var rr = Math.hypot(tilt.sy, tilt.sz);
+    var ang = Math.atan2(tilt.sz, tilt.sy);
+    var da = ang - tilt.a0;
+    while (da > Math.PI) da -= 2 * Math.PI;
+    while (da < -Math.PI) da += 2 * Math.PI;
+    var dX = tilt.sx - tilt.gx0, dY = -da * rr;
+    // Výchozí poloha se pomalu přizpůsobuje tomu, jak telefon držíte
+    var kb = 1 - Math.exp(-dt / TILT_ADAPT);
+    tilt.gx0 += dX * kb;
+    tilt.a0 += da * kb;
+    var len = Math.hypot(dX, dY);
+    // Měkká křivka bez ostrého nárůstu u nuly (tanh), takže malé náklony nepůsobí škubavě
+    var mag = Math.tanh(Math.max(0, len - TILT_DEAD) / TILT_SPAN);
+    var nx = len > 1e-6 ? TILT_DIR * dX / len : 0, ny = len > 1e-6 ? TILT_DIR * dY / len : 0;
+    // Do návrhového prostoru na šířku se směr (X, Y) převádí na (Y, -X).
+    hist.push({ t: now, a: true, m: true, ux: ny, uy: -nx, mag: mag });
+  }
+
+  // Štítek dole ukazuje stav: výzvu k povolení, chybu, nebo na chvíli potvrzení, že pohyb běží
+  var hint = document.getElementById('hint');
+  var DOE = window.DeviceOrientationEvent;
+  function say(text, keep) {
+    clearTimeout(hintTimer);
+    hint.textContent = text;
+    hint.hidden = false;
+    if (!keep) hintTimer = setTimeout(function () { hint.hidden = true; }, 2200);
+  }
+  function attachTilt() {
+    if (tilt.on) return;
+    tilt.on = true;
+    window.addEventListener('deviceorientation', onOrient);
+    // Pokud do dvou sekund nepřijde žádná hodnota, telefon nebo prohlížeč náklon neposílá
+    setTimeout(function () {
+      if (!gotEvent) say('Telefon neposílá data o náklonu. Stránka musí běžet přes https a v prohlížeči nesmí být zakázaný přístup k pohybu.', true);
+    }, 2000);
+    hint.hidden = true;
+  }
+  function askPermission() {
+    DOE.requestPermission().then(function (res) {
+      if (res === 'granted') attachTilt();
+      else say('Povolení bylo zamítnuto. Zavřete Safari, stránku otevřete znovu a klepněte na tento štítek.', true);
+    }).catch(function (err) {
+      say('Povolení se nepodařilo vyžádat (' + (err && err.name ? err.name : 'chyba') + '). Klepněte znovu.', true);
+    });
+  }
+  if (DOE) {
+    if (typeof DOE.requestPermission === 'function') {
+      // iPhone: povolení se musí vyžádat klepnutím na tlačítko
+      say('Klepnutím zapnete pohyb telefonu', true);
+      hint.addEventListener('click', askPermission);
+    } else if (!reduceMotion) {
+      attachTilt();
+    }
+  } else {
+    say('Tento prohlížeč nepodporuje náklon telefonu.', false);
+  }
+
+  function mouseAt(time) {
+    for (var i = hist.length - 1; i >= 0; i--) if (hist[i].t <= time) return hist[i];
+    return hist[0];
+  }
+  function smooth(f) { return f * f * (3 - 2 * f); }
+
+  var DIAG = Math.hypot(W, H);
+  var last = performance.now();
+
+  function frame(now) {
+    var gapMs = now - last;
+    var dt = Math.min(gapMs / 1000, 0.1);
+    last = now;
+    if (DEBUG) { st.frames++; if (gapMs > st.gapMax) st.gapMax = gapMs; if (gapMs > st.gapWorst) st.gapWorst = gapMs; }
+
+    while (hist.length > 1 && hist[1].t < now - 2500) hist.shift();
+
+    for (var i = 0; i < tiles.length; i++) {
+      var t = tiles[i];
+
+      // Čím je dlaždice dál od doteku, tím později a pomaleji reaguje
+      var ref = hist[hist.length - 1].m ? CENTER : lastPos;
+      var d = Math.hypot(t.cx - ref.x, t.cy - ref.y);
+      var f = smooth(Math.min(1, d / (DIAG * 0.7)));
+      var s = mouseAt(now - DELAY_MAX * 1000 * f);
+
+      var tx = t.rx, ty = t.ry, rate = RATE_REST;
+      if (s.a && s.m) {
+        // Náklon: všechna jádra míří stejným směrem, síla výchylky závisí na velikosti náklonu
+        var ux = s.ux / t.w, uy = s.uy / t.h, ul = Math.hypot(ux, uy);
+        if (ul > 1e-9) {
+          tx = t.rx * (1 - s.mag) + ux / ul * t.reach * s.mag;
+          ty = t.ry * (1 - s.mag) + uy / ul * t.reach * s.mag;
+        }
+        rate = RATE_TILT_NEAR + (RATE_TILT_FAR - RATE_TILT_NEAR) * f;
+      } else if (s.a) {
+        var vx = (s.x - t.cx) / t.w, vy = (s.y - t.cy) / t.h;
+        var len = Math.hypot(vx, vy);
+        if (len > 1e-6) {
+          var amp = t.reach * Math.min(1, len / SATURATE);
+          tx = vx / len * amp;
+          ty = vy / len * amp;
+        } else { tx = t.ox; ty = t.oy; }
+        rate = RATE_NEAR + (RATE_FAR - RATE_NEAR) * f;
+      }
+
+      var dx = t.ox - tx, dy = t.oy - ty;
+      if (Math.abs(dx) > 1e-4 || Math.abs(dy) > 1e-4 || Math.abs(t.vx) > 1e-4 || Math.abs(t.vy) > 1e-4) {
+        // Kriticky tlumená pružina: rychlost začíná od nuly, takže pohyb pozvolna najíždí a měkce dojíždí
+        var e = Math.exp(-rate * dt);
+        var cx2 = t.vx + rate * dx, cy2 = t.vy + rate * dy;
+        t.ox = tx + (dx + cx2 * dt) * e;
+        t.oy = ty + (dy + cy2 * dt) * e;
+        t.vx = (cx2 - rate * (dx + cx2 * dt)) * e;
+        t.vy = (cy2 - rate * (dy + cy2 * dt)) * e;
+        dirty = true;
+      }
+    }
+
+    for (var ti = 0; ti < tiles.length; ti++) {
+      if (tiles[ti].a < 1) { tiles[ti].a = Math.min(1, tiles[ti].a + dt / FADE); dirty = true; }
+    }
+    if (ghosts.length) {
+      for (var gi = 0; gi < ghosts.length; gi++) ghosts[gi].fade -= dt / FADE;
+      ghosts = ghosts.filter(function (g) { return g.fade > 0; });
+      dirty = true;
+    }
+
+    if (dirty) {
+      dirty = false;
+      var d0 = performance.now();
+      draw();
+      if (DEBUG) {
+        var dm = performance.now() - d0;
+        st.drawSum += dm; st.drawN++; if (dm > st.drawMax) st.drawMax = dm;
+      }
+    }
+    if (DEBUG) {
+      var c1 = tiles[1];
+      var cp = [c1.cx + c1.ox * c1.w, c1.cy + c1.oy * c1.h];
+      if (st.prev) {
+        var stp = Math.hypot(cp[0] - st.prev[0], cp[1] - st.prev[1]);
+        if (stp > st.stepMax) st.stepMax = stp;
+        if (stp > st.stepWorst) st.stepWorst = stp;
+      }
+      st.prev = cp;
+      if (now - st.t0 >= 1000) {
+        var secs = (now - st.t0) / 1000;
+        var last1 = hist[hist.length - 1];
+        dbg.textContent =
+          'fps ' + Math.round(st.frames / secs) + '   mezera max ' + Math.round(st.gapMax) + ' ms (od otevreni ' + Math.round(st.gapWorst) + ')\n' +
+          'kresleni prum ' + (st.drawN ? (st.drawSum / st.drawN).toFixed(1) : '0') + ' ms, max ' + st.drawMax.toFixed(1) + ' ms\n' +
+          'senzor ' + Math.round(st.ev / secs) + ' udalosti/s   rezim ' + (last1.m ? 'naklon' : (last1.a ? 'dotek' : 'klid')) + '\n' +
+          'skok jadra max ' + st.stepMax.toFixed(1) + ' px/snimek (od otevreni ' + st.stepWorst.toFixed(1) + ')\n' +
+          'beta ' + (st.beta == null ? '-' : st.beta.toFixed(0)) + '  gamma ' + (st.gamma == null ? '-' : st.gamma.toFixed(0)) +
+          '  uhel obrazovky ' + scrAngle() + '  okno ' + window.innerWidth + 'x' + window.innerHeight;
+        st.frames = 0; st.ev = 0; st.drawSum = 0; st.drawN = 0; st.drawMax = 0; st.gapMax = 0; st.stepMax = 0; st.t0 = now;
+      }
+    }
+    requestAnimationFrame(frame);
+  }
+
+  resize();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body></html>

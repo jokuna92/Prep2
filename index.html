@@ -23,9 +23,8 @@ canvas{position:absolute;display:block;touch-action:none}
 
 <script>
 (function () {
-  // Návrhový prostor zůstává na šířku (2560 x 1440), na displej se kreslí otočený o 90 stupňů.
-  var W = 2560, H = 1440;
-  var PW = H, PH = W; // rozměry plátna na výšku
+  // Rozložení se počítá z velikosti okna (VW x VH v CSS pixelech), takže se skládá do jakéhokoli okna.
+  var VW = 400, VH = 711;
   var BG = '#c9a995';
   var BEIGE = [201, 169, 149];
   var ORANGE = [255, 88, 46], PURPLE = [97, 19, 186], GREEN = [2, 64, 17];
@@ -99,23 +98,80 @@ canvas{position:absolute;display:block;touch-action:none}
       rx: rest[0], ry: rest[1], ox: rest[0], oy: rest[1], vx: 0, vy: 0
     };
   }
-  var r, c;
-  // Radiální záře za kruhy (kreslí se první, aby ležela pod nimi), pohybuje se stejně jako ostatní gradienty
-  addTile('rect', 0, 0, 1463, 1440, 1, gGlow, [0, 0], REACH.glow).glow = true;
-  var cw = 1463 / 4, ch = 360;
-  // Celá plocha kruhů začíná jako jediný velký kruh. Dvojím rozdělením vznikne původní mřížka 4 x 4.
-  addTile('ellipse', 0, 0, 1463, 1440, 1, gCircle, [0.217, -0.111], REACH.circle).w0 = cw;
-  tiles[tiles.length - 1].h0 = ch;
-  // Fialová a zelená plocha začínají také jako jediný velký útvar (původní dlaždice 3 a 8 jsou jejich základní velikost)
-  var pw = (2560 - 1463) / 3;
+  // Kořenové dlaždice. Kruhy a čtverce mají vždy stejnou šířku a výšku, pruhy mohou mít jakýkoli tvar.
+  var REST = { circle: [0.217, -0.111], purple: [0.162, -0.163], green: [0.157, -0.155], glow: [0, 0] };
+  var portrait = true;
+  var glowT = makeTile('rect', 0, 0, 1, 1, 1, gGlow, [0, 0], REACH.glow);
+  glowT.glow = true; glowT.w0 = 1463; glowT.h0 = 1463;
+  var circleT = makeTile('ellipse', 0, 0, 1, 1, 1, gCircle, REST.circle, REACH.circle);
+  circleT.w0 = 365.75; circleT.h0 = 365.75;
   // Fialové jsou pruhy: dělí se jen svisle, vedle sebe
-  var pt = addTile('rect', 1463, 0, 2560 - 1463, 872, 2.4, gPurple, [0.162, -0.163], REACH.purple);
-  pt.w0 = pw; pt.mode = 'vert';
-  var gw = (2560 - 1463) / 4, gh = (1440 - 872) / 2;
-  // Zelené jsou čtverce: začínají jako dva velké (každý se dělí na 4 čtverce), dohromady dávají původních 8 po jednom rozdělení
-  for (c = 0; c < 2; c++) {
-    var gt = addTile('rect', 1463 + c * 2 * gw, 872, 2 * gw, 2 * gh, 1, gGreen, [0.157, -0.155], REACH.green);
-    gt.w0 = gw; gt.h0 = gh;
+  var purpleT = makeTile('rect', 0, 0, 1, 1, 2.4, gPurple, REST.purple, REACH.purple);
+  purpleT.w0 = 365.67; purpleT.h0 = 872; purpleT.mode = 'vert';
+  var greenRoots = [], greenKey = '';
+  tiles.push(glowT, circleT, purpleT);
+
+  // Souřadnice dlaždice a jejích potomků (děti leží v mřížce uvnitř rodiče)
+  function setGeom(t, x, y, w, h) {
+    t.x = x; t.y = y; t.w = w; t.h = h; t.cx = x + w / 2; t.cy = y + h / 2;
+    if (t.kids) {
+      var cols = t.mode === 'vert' ? 4 : 2, rows = t.mode === 'vert' ? 1 : 2, kw = w / cols, kh = h / rows;
+      for (var i = 0; i < t.kids.length; i++) setGeom(t.kids[i], x + (i % cols) * kw, y + Math.floor(i / cols) * kh, kw, kh);
+    }
+  }
+  function setRest(t) {
+    var base = REST[t.group];
+    t.rx = portrait ? -base[1] : base[0];
+    t.ry = portrait ? base[0] : base[1];
+    if (t.fresh) { t.ox = t.rx; t.oy = t.ry; t.fresh = false; }
+    if (t.kids) for (var i = 0; i < t.kids.length; i++) setRest(t.kids[i]);
+  }
+  [glowT, circleT, purpleT].forEach(function (t) { t.fresh = true; });
+
+  // Rozložení do okna. Na šířku: kruhy vlevo, vpravo nahoře fialové pruhy a dole řada zelených čtverců.
+  // Na výšku: kruhy nahoře, pod nimi vlevo zelené čtverce a vpravo fialové pruhy.
+  function layout() {
+    portrait = VW / VH < 1.4;
+    var L, cx0, cy0, pr, gr, s, m, r;
+    if (!portrait) {
+      L = Math.min(VH, 0.7 * VW);
+      cx0 = 0; cy0 = (VH - L) / 2;
+      var R = VW - L, n = Math.max(1, Math.ceil(R / (0.4 * VH)));
+      s = R / n; m = n; r = 1;
+      gr = { x: L, y: VH - s, w: R, h: s };
+      pr = { x: L, y: 0, w: R, h: VH - s };
+    } else {
+      L = Math.min(VW, 0.7 * VH);
+      cx0 = (VW - L) / 2; cy0 = 0;
+      var Rh = VH - L, Gw = 0.394 * VW, s0 = Gw / 2;
+      r = Math.max(1, Math.round(Rh / s0)); s = Rh / r;
+      m = Math.max(1, Math.round(Gw / s));
+      while (m > 1 && VW - m * s < 0.25 * VW) m--;
+      gr = { x: 0, y: L, w: m * s, h: Rh };
+      pr = { x: m * s, y: L, w: VW - m * s, h: Rh };
+    }
+    var key = m + 'x' + r;
+    if (key !== greenKey) {
+      // Počet zelených čtverců se změnil, začínají znovu
+      tiles = tiles.filter(function (t) { return t.group !== 'green'; });
+      greenRoots = [];
+      for (var i = 0; i < m * r; i++) {
+        var gt = makeTile('rect', 0, 0, 1, 1, 1, gGreen, REST.green, REACH.green);
+        gt.w0 = 274.25; gt.h0 = 274.25; gt.fresh = true;
+        greenRoots.push(gt);
+      }
+      tiles = tiles.concat(greenRoots);
+      phases.green = 'split';
+      greenKey = key;
+    }
+    setGeom(glowT, cx0, cy0, L, L);
+    setGeom(circleT, cx0, cy0, L, L);
+    setGeom(purpleT, pr.x, pr.y, pr.w, pr.h);
+    for (var j = 0; j < greenRoots.length; j++) setGeom(greenRoots[j], gr.x + (j % m) * s, gr.y + Math.floor(j / m) * s, s, s);
+    [glowT, circleT, purpleT].concat(greenRoots).forEach(setRest);
+    ghosts = [];
+    DIAG = Math.hypot(VW, VH);
+    CENTER.x = VW / 2; CENTER.y = VH / 2;
   }
 
   var sx = 1, dirty = true;
@@ -136,27 +192,26 @@ canvas{position:absolute;display:block;touch-action:none}
   }
 
   function resize() {
-    var sw = stage.clientWidth, sh = stage.clientHeight;
-    var scale = Math.min(sw / PW, sh / PH);
-    var cssW = PW * scale, cssH = PH * scale;
+    VW = stage.clientWidth || window.innerWidth || VW;
+    VH = stage.clientHeight || window.innerHeight || VH;
     var dpr = Math.min(window.devicePixelRatio || 1, 2);
-    canvas.style.width = cssW + 'px';
-    canvas.style.height = cssH + 'px';
-    canvas.style.left = ((sw - cssW) / 2) + 'px';
-    canvas.style.top = ((sh - cssH) / 2) + 'px';
-    canvas.width = Math.round(cssW * dpr);
-    canvas.height = Math.round(cssH * dpr);
-    sx = canvas.width / PW;
+    canvas.style.width = VW + 'px';
+    canvas.style.height = VH + 'px';
+    canvas.style.left = '0px';
+    canvas.style.top = '0px';
+    canvas.width = Math.round(VW * dpr);
+    canvas.height = Math.round(VH * dpr);
+    sx = canvas.width / VW;
+    layout();
     dirty = true;
   }
 
   var ghosts = []; // dlaždice, které se právě prolínají do ztracena (rozdělené nebo sloučené)
 
   function draw() {
-    // Otočení o 90 stupňů po směru hodin: X = H - y, Y = x
-    ctx.setTransform(0, sx, -sx, 0, H * sx, 0);
+    ctx.setTransform(sx, 0, 0, sx, 0, 0);
     ctx.fillStyle = BG;
-    ctx.fillRect(0, 0, W, H);
+    ctx.fillRect(0, 0, VW, VH);
 
     for (var gi = 0; gi < ghosts.length; gi++) drawTile(ghosts[gi], smooth(Math.max(0, ghosts[gi].fade)));
     for (var i = 0; i < tiles.length; i++) drawTile(tiles[i], smooth(tiles[i].a));
@@ -175,20 +230,18 @@ canvas{position:absolute;display:block;touch-action:none}
     ctx.translate(t.cx + t.ox * t.w, t.cy + t.oy * t.h);
     ctx.scale(scx, scy * t.k);
     ctx.fillStyle = t.g.gr;
-        ctx.fillRect(-3000 / scx, -3000 / (scy * t.k), 6000 / scx, 6000 / (scy * t.k));
+    ctx.fillRect(-3000 / scx, -3000 / (scy * t.k), 6000 / scx, 6000 / (scy * t.k));
     ctx.restore();
   }
 
   // Historie pozic doteku nebo myši, aby každá dlaždice mohla reagovat se zpožděním
   var hist = [{ t: 0, a: false, x: 0, y: 0 }];
-  var lastPos = { x: W / 2, y: H / 2 };
+  var lastPos = { x: VW / 2, y: VH / 2 };
 
-  // Souřadnice plátna na výšku zpět do návrhového prostoru na šířku: x = Y, y = H - X
+  // Souřadnice dotyku v pixelech okna
   function toDesign(e) {
     var rect = canvas.getBoundingClientRect();
-    var px = (e.clientX - rect.left) / rect.width * PW;
-    var py = (e.clientY - rect.top) / rect.height * PH;
-    return { x: py, y: H - px };
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
   }
   var touching = false; // dokud je prst na displeji, má dotek přednost před náklonem
   var touchT = 0;
@@ -275,7 +328,8 @@ canvas{position:absolute;display:block;touch-action:none}
   window.addEventListener('resize', resize);
 
   // Náklon telefonu (deviceorientation). Funguje na zabezpečené adrese (HTTPS) a při držení telefonu na výšku.
-  var CENTER = { x: W / 2, y: H / 2 };
+  var CENTER = { x: VW / 2, y: VH / 2 };
+  var DIAG = Math.hypot(VW, VH);
   var tilt = { on: false, gx0: null, a0: 0, sx: 0, sy: 0, sz: 0, t: 0 };
   var gotEvent = false;  // přišla alespoň jedna skutečná hodnota náklonu
   var hintTimer = null;
@@ -313,8 +367,7 @@ canvas{position:absolute;display:block;touch-action:none}
     // Měkká křivka bez ostrého nárůstu u nuly (tanh), takže malé náklony nepůsobí škubavě
     var mag = Math.tanh(Math.max(0, len - TILT_DEAD) / TILT_SPAN);
     var nx = len > 1e-6 ? TILT_DIR * dX / len : 0, ny = len > 1e-6 ? TILT_DIR * dY / len : 0;
-    // Do návrhového prostoru na šířku se směr (X, Y) převádí na (Y, -X).
-    hist.push({ t: now, a: true, m: true, ux: ny, uy: -nx, mag: mag });
+    hist.push({ t: now, a: true, m: true, ux: nx, uy: ny, mag: mag });
   }
 
   // Štítek dole ukazuje stav: výzvu k povolení, chybu, nebo na chvíli potvrzení, že pohyb běží
@@ -362,7 +415,6 @@ canvas{position:absolute;display:block;touch-action:none}
   }
   function smooth(f) { return f * f * (3 - 2 * f); }
 
-  var DIAG = Math.hypot(W, H);
   var last = performance.now();
 
   function frame(now) {

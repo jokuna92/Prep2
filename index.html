@@ -41,6 +41,7 @@ canvas{position:absolute;display:block;touch-action:none}
   var RATE_TILT_NEAR = 5.0; // tuhost pohybu při náklonu, blízké dlaždice (menší číslo = pomalejší)
   var RATE_TILT_FAR = 2.2;  // tuhost pohybu při náklonu, vzdálené dlaždice
   var TILT_ADAPT = 90;   // sekundy, za které se výchozí poloha telefonu přizpůsobí tomu, jak ho držíte
+  var LAND_FLIP = false;  // kdyby se při natočení na šířku náklon dělal opačně, přepněte na true
   var TILT_DIR = 1;      // 1 = jádro se kutálí ve směru, kam telefon klopíte, -1 = opačně
   var MAX_CIRCLES = 100; // nejvyšší počet kusů v jedné ploše (každé dělení přidá 3, takže 1 + 3 x 33 = 100)
   var MAX_DEPTH = 5;     // pojistka proti příliš malým kruhům
@@ -326,6 +327,11 @@ canvas{position:absolute;display:block;touch-action:none}
   document.documentElement.addEventListener('mouseleave', pushLeave);
   window.addEventListener('blur', pushLeave);
   window.addEventListener('resize', resize);
+  // iPhone při otočení hlásí novou velikost okna se zpožděním, proto se rozložení přepočítá i později
+  function resizeSoon() { resize(); setTimeout(resize, 120); setTimeout(resize, 400); }
+  window.addEventListener('orientationchange', resizeSoon);
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', resize);
+  if (window.screen && window.screen.orientation && window.screen.orientation.addEventListener) window.screen.orientation.addEventListener('change', resizeSoon);
 
   // Náklon telefonu (deviceorientation). Funguje na zabezpečené adrese (HTTPS) a při držení telefonu na výšku.
   var CENTER = { x: VW / 2, y: VH / 2 };
@@ -367,7 +373,16 @@ canvas{position:absolute;display:block;touch-action:none}
     // Měkká křivka bez ostrého nárůstu u nuly (tanh), takže malé náklony nepůsobí škubavě
     var mag = Math.tanh(Math.max(0, len - TILT_DEAD) / TILT_SPAN);
     var nx = len > 1e-6 ? TILT_DIR * dX / len : 0, ny = len > 1e-6 ? TILT_DIR * dY / len : 0;
-    hist.push({ t: now, a: true, m: true, ux: nx, uy: ny, mag: mag });
+    // Při otočení displeje na šířku se osy senzoru (vázané na tělo telefonu) otočí vůči stránce
+    var ang = scrAngle(), ux = nx, uy = ny;
+    if (typeof ang === 'number') {
+      var q = ((Math.round(ang / 90) % 4) + 4) % 4;
+      if (q === 1) { ux = ny; uy = -nx; }
+      else if (q === 2) { ux = -nx; uy = -ny; }
+      else if (q === 3) { ux = -ny; uy = nx; }
+      if (LAND_FLIP && (q === 1 || q === 3)) { ux = -ux; uy = -uy; }
+    }
+    hist.push({ t: now, a: true, m: true, ux: ux, uy: uy, mag: mag });
   }
 
   // Štítek dole ukazuje stav: výzvu k povolení, chybu, nebo na chvíli potvrzení, že pohyb běží
@@ -421,6 +436,8 @@ canvas{position:absolute;display:block;touch-action:none}
     var gapMs = now - last;
     var dt = Math.min(gapMs / 1000, 0.1);
     last = now;
+    // Pojistka: změní-li se velikost okna a událost nepřijde, rozložení se přesto přepočítá
+    if (stage.clientWidth !== VW || stage.clientHeight !== VH) resize();
     if (DEBUG) { st.frames++; if (gapMs > st.gapMax) st.gapMax = gapMs; if (gapMs > st.gapWorst) st.gapWorst = gapMs; }
 
     while (hist.length > 1 && hist[1].t < now - 2500) hist.shift();

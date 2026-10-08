@@ -31,9 +31,9 @@ canvas{position:absolute;display:block;touch-action:none}
 
   // Nastavení chování (lze ladit)
   // Pohyb má měkký rozjezd i dojezd (kriticky tlumená pružina bez překmitu). Menší číslo = delší najíždění.
-  var DELAY_MAX = 0.6;   // sekundy zpoždění u nejvzdálenějších dlaždic
-  var RATE_NEAR = 3.2;   // tuhost u dlaždic blízko doteku (1/s)
-  var RATE_FAR = 1.3;    // tuhost u nejvzdálenějších dlaždic (1/s)
+  var DELAY_MAX = 0.35;  // sekundy zpoždění u nejvzdálenějších dlaždic
+  var RATE_NEAR = 7.0;   // tuhost u dlaždic blízko doteku (1/s)
+  var RATE_FAR = 3.0;    // tuhost u nejvzdálenějších dlaždic (1/s)
   var RATE_REST = 1.8;   // tuhost při návratu do výchozí polohy
   var TILT_SPAN = 0.20;     // změna polohy telefonu, při které výchylka dosáhne zhruba tří čtvrtin maxima (větší číslo = méně citlivé a delší škála)
   var TILT_SMOOTH = 0.10;  // sekundy, vyhlazení signálu ze senzoru, aby pohyb neškubal (větší číslo = klidnější)

@@ -44,7 +44,7 @@ canvas{position:absolute;display:block;touch-action:none}
   var LAND_FLIP = false;  // kdyby se při natočení na šířku náklon dělal opačně, přepněte na true
   var TILT_DIR = 1;      // 1 = jádro se kutálí ve směru, kam telefon klopíte, -1 = opačně
   var MAX_CIRCLES = 100; // nejvyšší počet kusů v jedné ploše (každé dělení přidá 3, takže 1 + 3 x 33 = 100)
-  var MAX_DEPTH = 5;     // pojistka proti příliš malým kruhům
+  var MAX_DEPTH = 10;    // kolikrát lze kruh nebo čtverec za sebou rozdělit (10 = tisícina původní velikosti)
   var FADE = 0.45;       // sekundy prolnutí při dělení a slučování
   var SATURATE = 0.5;    // vzdálenost doteku (v rozměrech dlaždice), od které je výchylka plná
   // Maximální výchylka barevného jádra od středu dlaždice (v rozměrech dlaždice). Větší hodnota, výraznější natáčení.
@@ -231,7 +231,7 @@ canvas{position:absolute;display:block;touch-action:none}
     ctx.translate(t.cx + t.ox * t.w, t.cy + t.oy * t.h);
     ctx.scale(scx, scy * t.k);
     ctx.fillStyle = t.g.gr;
-    ctx.fillRect(-3000 / scx, -3000 / (scy * t.k), 6000 / scx, 6000 / (scy * t.k));
+    ctx.fillRect(-3000, -3000, 6000, 6000);
     ctx.restore();
   }
 

@@ -515,6 +515,7 @@ canvas{position:absolute;display:block;touch-action:none}
         var secs = (now - st.t0) / 1000;
         var last1 = hist[hist.length - 1];
         dbg.textContent =
+          'verze: deleni max ' + MAX_DEPTH + ' urovni, kusu ' + tiles.length + '\n' +
           'fps ' + Math.round(st.frames / secs) + '   mezera max ' + Math.round(st.gapMax) + ' ms (od otevreni ' + Math.round(st.gapWorst) + ')\n' +
           'kresleni prum ' + (st.drawN ? (st.drawSum / st.drawN).toFixed(1) : '0') + ' ms, max ' + st.drawMax.toFixed(1) + ' ms\n' +
           'senzor ' + Math.round(st.ev / secs) + ' udalosti/s   rezim ' + (last1.m ? 'naklon' : (last1.a ? 'dotek' : 'klid')) + '\n' +
